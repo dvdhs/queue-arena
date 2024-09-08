@@ -1,0 +1,12 @@
+-I
+/Users/davidsuh/build/boost_1_62_0
+-I
+/Users/davidsuh/build/SPSCQueue/include
+-I
+./include
+-I
+/Users/davidsuh/build/benchmark/include
+-L
+/Users/davidsuh/build/benchmark/build/src
+-l
+benchmark
