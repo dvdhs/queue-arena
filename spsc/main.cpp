@@ -1,17 +1,42 @@
-#include <functional>
 #include <thread>
 #include <cstdint>
 #include <time.h>
 #include <type_traits>
+#include <stdexcept>
 
 #include <pthread.h>
+
+#ifdef __APPLE__
+#ifdef __MACH__
 #include <mach/mach.h>
 #include <mach/thread_policy.h>
 #include <mach/thread_act.h>
 
+void pinThread(int core) {
+    thread_affinity_policy_data_t policy = { core };
+    mach_port_t mach_thread = pthread_mach_thread_np(pthread_self());
+
+    thread_policy_set(mach_thread,
+                      THREAD_AFFINITY_POLICY,
+                      (thread_policy_t)&policy,
+                      THREAD_AFFINITY_POLICY_COUNT);
+
+}
+#endif
+#endif
+#ifdef __unix__
+void pinThread(uint32_t core) {
+  ::cpu_set_t cpuset;
+  CPU_ZERO(&cpuset);
+  CPU_SET(core, &cpuset);
+  if (::pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) == -1) {
+    throw std::runtime_error("error while pinning thread");
+  }
+}
+#endif
+
 #include "benchmark/benchmark.h"
-
-
+#include "Fifo4a.hpp"
 #include "boost/lockfree/spsc_queue.hpp"
 #include "rigtorp/SPSCQueue.h"
 
@@ -29,16 +54,6 @@ struct isRigtorpQueue : std::false_type {};
 template<typename V>
 struct isRigtorpQueue<rigtorp::SPSCQueue<V>> : std::true_type {};
 
-void pinThread(int core) {
-    thread_affinity_policy_data_t policy = { core };
-    mach_port_t mach_thread = pthread_mach_thread_np(pthread_self());
-
-    thread_policy_set(mach_thread,
-                      THREAD_AFFINITY_POLICY,
-                      (thread_policy_t)&policy,
-                      THREAD_AFFINITY_POLICY_COUNT);
-
-}
 
 template<template<typename> typename QueueType>
 void BM_SPSCQueue(benchmark::State& state) {
@@ -50,7 +65,7 @@ void BM_SPSCQueue(benchmark::State& state) {
   for (auto _ : state) {
     numIts++;
     auto t1 = std::thread([&](){
-      pinThread(1);
+      pinThread(8);
       for (int i=0; i<state.range(0); ++i) {
         if constexpr(isRigtorpQueue<Queue>::value) {
           while(auto x = !q.try_push(i)) { benchmark::DoNotOptimize(x);}
@@ -62,7 +77,7 @@ void BM_SPSCQueue(benchmark::State& state) {
 
     uint32_t chk = 0;
     QueueValueType val;
-    pinThread(2);
+    pinThread(9);
     for (int i=0; i<state.range(0); ++i) {
       if constexpr(isRigtorpQueue<Queue>::value) {
         for(;;)  {
@@ -86,6 +101,7 @@ void BM_SPSCQueue(benchmark::State& state) {
   state.counters["op/s"] = benchmark::Counter(double(state.range(0)*numIts), benchmark::Counter::kIsRate);
 };
 
+// Weird hack to make it work with Google benchmark
 #define redef(old, new) \
   template<typename T> \
   using new = old<T>
@@ -100,6 +116,11 @@ namespace {
 
   redef(boost::lockfree::spsc_queue, boost_spsc_);
   BENCHMARK_TEMPLATE(BM_SPSCQueue, boost_spsc_)
+    ->Arg(1'000'000)
+    ->Arg(500'000'000)
+    ->Unit(benchmark::kMillisecond);
+  redef(Fifo4a, fifo4a_);
+  BENCHMARK_TEMPLATE(BM_SPSCQueue, fifo4a_)
     ->Arg(1'000'000)
     ->Arg(500'000'000)
     ->Unit(benchmark::kMillisecond);
